@@ -6,7 +6,7 @@ from os.path import join, isdir, isfile
 
 from typing import Set, List, Dict
 
-from utils.pickle_utils import load_zipped_pickle, save_zipped_pickle
+from pickle_utils import load_zipped_pickle, save_zipped_pickle
 
 DEFAULT_EXCLUDED_TESTS = ["''", "nan", ""]
 
@@ -210,8 +210,8 @@ class BugResults:
         else:
             max_cost = max(all_max_costs)
             all_max_costs.sort()
-            intervals_steps = (0 if i == 0 else all_max_costs[i - 1], m, int(m / max_steps) if m > max_steps else 1 for
-                               i, m in enumerate(all_max_costs))
+            intervals_steps = [(0 if i == 0 else all_max_costs[i - 1], m, (int(m / max_steps) if m > max_steps else 1))
+                               for i, m in enumerate(all_max_costs)]
             for i_s in intervals_steps:
                 for effort_step in range(i_s[0], i_s[1], i_s[2]):
                     normalised_effort_step = effort_step * 100.0 / max_cost
