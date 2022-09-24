@@ -1,1 +1,5 @@
-/.idea/
+.idea/
+.git/
+__pycache__/
+rsync-upload.sh
+
