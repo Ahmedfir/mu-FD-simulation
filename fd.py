@@ -260,60 +260,66 @@ class SimulationsArray:
             raise Exception("{0} : metric not supported!")
 
 
-class BugResults:
+class BugNormalisationResults:
 
-    def __init__(self, bug_name: str, tools_results: Dict[str, SimulationsArray]):
+    def __init__(self, bug_name: str, metric: EffortMetrics, max_cost_min_tool=True, steps=100,
+                 all_tools_broke_tests=False):
         self.bug_name = bug_name
-        self.tools_results: Dict[str, SimulationsArray] = tools_results
+        self.metric = metric
+        self.max_cost_min_tool = max_cost_min_tool
+        self.steps = steps
+        self.all_tools_broke_tests = all_tools_broke_tests
+        # tool: [effort:fd]
+        self.result: Dict[str, Dict[float, float]] = dict()
+        self.max_cost = -1
 
-    def fd_by_cost(self, metric: EffortMetrics, intermediate_dir, max_cost_min_tool=True, steps=100,
-                   all_tools_broke_tests=False) -> Dict[
-        str, Dict[float, float]]:
+    def fd_by_cost(self, tools_results: Dict[str, SimulationsArray], intermediate_dir):
+
         pickle_file = None
         # if disk caching is enabled, try to reload results form cache.
         if intermediate_dir is not None:
-            pickle_dir = join(intermediate_dir, metric.name, str(steps), 'zoomed' if max_cost_min_tool else 'all')
+            pickle_dir = join(intermediate_dir, self.metric.name, str(self.steps),
+                              'zoomed' if self.max_cost_min_tool else 'all')
             if not isdir(pickle_dir):
                 makedirs(pickle_dir)
-            pickle_file = join(pickle_dir, self.bug_name + '_' + '_'.join(self.tools_results.keys()) + '.pickle')
+            pickle_file = join(pickle_dir, self.bug_name + '_' + '_'.join(tools_results.keys()) + '.pickle')
             if isfile(pickle_file):
                 return load_zipped_pickle(pickle_file)
 
-        # tool: [effort:fd]
-        result: Dict[str, Dict[float, float]] = dict()
-        all_max_costs = [sa.max_cost(metric) for sa in self.tools_results.values()]
-        if max_cost_min_tool:
-            if all_tools_broke_tests:
-                max_cost = min(all_max_costs)
-                assert max_cost > 0, '{0} : one of the tools has no mutants {1}'.format(self.bug_name,
-                                                                                        self.tools_results.keys())
+        all_max_costs = [sa.max_cost(self.metric) for sa in tools_results.values()]
+        if self.max_cost_min_tool:
+            if self.all_tools_broke_tests:
+                self.max_cost = min(all_max_costs)
+                assert self.max_cost > 0, '{0} : one of the tools has no mutants {1}'.format(self.bug_name,
+                                                                                             tools_results.keys())
             else:
                 all_max_costs = [c for c in all_max_costs if c > 0]
                 if len(all_max_costs) == 0:
                     logging.warning('Skipping {0}: no tool spent any effort on this target.'.format(self.bug_name))
                     return None
-                max_cost = min(all_max_costs)
+                self.max_cost = min(all_max_costs)
 
-            for effort_step in range(0, 101, int(100 / steps)):
-                real_effort_step = max_cost * float(effort_step) / 100.0
-                for tool in self.tools_results:
-                    if tool in result:
-                        result[tool][effort_step] = self.tools_results[tool].mean_fd_at(real_effort_step, metric)
+            for effort_step in range(0, 101, int(100 / self.steps)):
+                real_effort_step = self.max_cost * float(effort_step) / 100.0
+                for tool in tools_results:
+                    if tool in self.result:
+                        self.result[tool][effort_step] = tools_results[tool].mean_fd_at(real_effort_step, self.metric)
                     else:
-                        result[tool] = {
-                            effort_step: self.tools_results[tool].mean_fd_at(real_effort_step, metric)}
+                        self.result[tool] = {
+                            effort_step: tools_results[tool].mean_fd_at(real_effort_step, self.metric)}
         else:
-            max_cost = max(all_max_costs)
-            for effort_step in range(0, 101, int(100 / steps)):
-                real_effort_step = max_cost * float(effort_step) / 100.0
-                for tool in self.tools_results:
-                    if self.tools_results[tool].max_cost(metric) >= real_effort_step:
-                        if tool in result:
-                            result[tool][effort_step] = self.tools_results[tool].mean_fd_at(real_effort_step, metric)
+            self.max_cost = max(all_max_costs)
+            for effort_step in range(0, 101, int(100 / self.steps)):
+                real_effort_step = self.max_cost * float(effort_step) / 100.0
+                for tool in tools_results:
+                    if tools_results[tool].max_cost(self.metric) >= real_effort_step:
+                        if tool in self.result:
+                            self.result[tool][effort_step] = tools_results[tool].mean_fd_at(real_effort_step,
+                                                                                            self.metric)
                         else:
-                            result[tool] = {
-                                effort_step: self.tools_results[tool].mean_fd_at(real_effort_step, metric)}
+                            self.result[tool] = {
+                                effort_step: tools_results[tool].mean_fd_at(real_effort_step, self.metric)}
 
         if pickle_file is not None:
-            save_zipped_pickle(result, pickle_file)
-        return result
+            save_zipped_pickle(self, pickle_file)
+        return self
