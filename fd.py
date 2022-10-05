@@ -26,8 +26,14 @@ class Mutant:
 class TargetCost:
     def __init__(self):
         self.achieved = False
-        self.mutants_analysed: int = -1
-        self.tests_written: int = -1
+        self.mutants_analysed: float = -1.0
+        self.tests_written: float = -1.0
+
+    def adapt_to_new_max(self, old_max_mutants, new_max_mutants, old_max_tests, new_max_tests):
+        if self.mutants_analysed > 0.0:
+            self.mutants_analysed = float(self.mutants_analysed) * float(new_max_mutants) / float(old_max_mutants)
+        if self.tests_written > 0.0:
+            self.tests_written = float(self.tests_written) * float(new_max_tests) / float(old_max_tests)
 
     def set(self, mutants_analysed, tests_written):
         self.achieved = True
@@ -55,6 +61,22 @@ class SimulationResults:
         self.bug_finding_cost: TargetCost = TargetCost()
         self.kill_all_mutants_cost: TargetCost = TargetCost()
         self.analyse_all_mutants: TargetCost = TargetCost()
+
+    def adapt_to_new_analyse_all_mutants_max(self, new_max_mutants: float, new_max_tests: float):
+        old_max_mutants = self.analyse_all_mutants.mutants_analysed
+        old_max_tests = self.analyse_all_mutants.tests_written
+        assert old_max_mutants > 0
+        self.bug_finding_cost.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
+        self.kill_all_mutants_cost.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
+        self.analyse_all_mutants.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
+        assert abs(
+            self.analyse_all_mutants.mutants_analysed - new_max_mutants) < 0.00000001, "{0} instead of {1}".format(
+            str(self.analyse_all_mutants.mutants_analysed), str(new_max_mutants))
+        assert abs(
+            self.analyse_all_mutants.tests_written - new_max_tests) < 0.00000001, "{0} instead of {1}".format(
+            str(self.analyse_all_mutants.tests_written), str(new_max_tests))
+        self.analyse_all_mutants.mutants_analysed = new_max_mutants
+        self.analyse_all_mutants.tests_written = new_max_tests
 
     def on_bug_found(self, mutants_analysed, tests_written):
         self.bug_finding_cost.set(mutants_analysed, tests_written)
@@ -238,10 +260,30 @@ class EffortMetrics(Enum):
 
 
 class SimulationsArray:
-    def __init__(self, simulations):
+    def __init__(self, simulations, adapt_to_mean_max=True):
         self.simulations = [s for s in simulations if isinstance(s, SimulationResults)]
         if len(self.simulations) == 0:
             self.simulations = [si for s in simulations for si in s if isinstance(s, List)]
+        if adapt_to_mean_max:
+            self._stretch()
+
+    def _stretch(self):
+        global_max_mutants = self.mean_max_cost(EffortMetrics.M)
+        global_max_tests = self.mean_max_cost(EffortMetrics.T)
+        for simulation in self.simulations:
+            simulation.adapt_to_new_analyse_all_mutants_max(global_max_mutants, global_max_tests)
+
+    @staticmethod
+    def _avg(collection) -> float:
+        return float(sum(collection)) / float(len(collection))
+
+    def mean_max_cost(self, metric: EffortMetrics):
+        if EffortMetrics.M == metric:
+            return self._avg([res.analyse_all_mutants.mutants_analysed for res in self.simulations])
+        elif EffortMetrics.T == metric:
+            return self._avg([res.analyse_all_mutants.tests_written for res in self.simulations])
+        else:
+            raise Exception("{0} : metric not supported!")
 
     def max_cost(self, metric: EffortMetrics):
         if EffortMetrics.M == metric:
@@ -281,7 +323,10 @@ class BugNormalisationResults:
             pickle_dir = join(intermediate_dir, self.metric.name, str(self.steps),
                               'zoomed' if self.max_cost_min_tool else 'all')
             if not isdir(pickle_dir):
-                makedirs(pickle_dir)
+                try:
+                    makedirs(pickle_dir)
+                except FileExistsError as e:
+                    print('concurrent dir creation : {0}'.format(pickle_dir))
             pickle_file = join(pickle_dir, self.bug_name + '_' + '_'.join(tools_results.keys()) + '.pickle')
             if isfile(pickle_file):
                 return load_zipped_pickle(pickle_file)
