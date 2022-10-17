@@ -65,7 +65,12 @@ class SimulationResults:
     def adapt_to_new_analyse_all_mutants_max(self, new_max_mutants: float, new_max_tests: float):
         old_max_mutants = self.analyse_all_mutants.mutants_analysed
         old_max_tests = self.analyse_all_mutants.tests_written
-        assert old_max_mutants > 0
+        if old_max_mutants <= 0:
+            raise Exception('wrong cost to analyse all mutants: {0}'.format(str(old_max_mutants)))
+        if old_max_mutants < old_max_tests:
+            raise Exception(
+                'wrong cost to analyse all mutants less than tests written: {0} < {1}'.format(str(old_max_mutants),
+                                                                                              str(old_max_tests)))
         self.bug_finding_cost.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
         self.kill_all_mutants_cost.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
         self.analyse_all_mutants.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
@@ -106,6 +111,9 @@ class BasePractitioner:
         self.analysed_mutants = 0
         self.written_tests = 0
 
+    def mutants_count(self) -> int:
+        pass
+
     def has_mutants(self) -> bool:
         """Has still mutants to analyse."""
         pass
@@ -131,15 +139,21 @@ class BasePractitioner:
     def simulate(self, target_tests) -> SimulationResults:
         assert target_tests is not None and len(target_tests) > 0
         simulation_results = SimulationResults()
-        while self.has_mutants():
-            written_test = self.analyse_mutant()
-            if written_test is not None:
-                if not simulation_results.is_bug_found() and written_test in target_tests:
-                    simulation_results.on_bug_found(self.analysed_mutants, self.written_tests)
-                if not simulation_results.killed_all_mutants() and not self.has_killable_mutants():
-                    simulation_results.on_all_mutants_killed(self.analysed_mutants, self.written_tests)
-        assert simulation_results.killed_all_mutants()
-        simulation_results.on_analysed_all_mutants(self.analysed_mutants, self.written_tests)
+        if not self.has_killable_mutants():
+            # skip the simulation
+            mu_count = self.mutants_count()
+            simulation_results.on_all_mutants_killed(mu_count, 0)
+            simulation_results.on_analysed_all_mutants(mu_count, 0)
+        else:
+            while self.has_mutants():
+                written_test = self.analyse_mutant()
+                if written_test is not None:
+                    if not simulation_results.is_bug_found() and written_test in target_tests:
+                        simulation_results.on_bug_found(self.analysed_mutants, self.written_tests)
+                    if not simulation_results.killed_all_mutants() and not self.has_killable_mutants():
+                        simulation_results.on_all_mutants_killed(self.analysed_mutants, self.written_tests)
+            assert simulation_results.killed_all_mutants()
+            simulation_results.on_analysed_all_mutants(self.analysed_mutants, self.written_tests)
         return simulation_results
 
 
@@ -148,6 +162,9 @@ class Practitioner(BasePractitioner):
     def __init__(self, mutants: List[Mutant], ranked: bool = False):
         super(Practitioner, self).__init__(ranked)
         self.mutants = copy.deepcopy(mutants)
+
+    def mutants_count(self):
+        return len(self.mutants)
 
     def has_mutants(self):
         return self.mutants is not None and len(self.mutants) > 0
@@ -181,6 +198,9 @@ class PractitionerXByPool(BasePractitioner):
         self.max_mutants_per_pool = max_mutants_per_pool
         self.selected_pool = 0
         self.mutants_generated_from_selected_pool = 0
+
+    def mutants_count(self) -> int:
+        return len([m for p in self.mutant_pools for m in p])
 
     def has_mutants(self) -> bool:
         return self.mutant_pools is not None and len(self.mutant_pools) > 0 and any(
@@ -260,12 +280,17 @@ class EffortMetrics(Enum):
 
 
 class SimulationsArray:
-    def __init__(self, simulations, adapt_to_mean_max=True):
+    def __init__(self, p_name, t_name, simulations, adapt_to_mean_max=True):
         self.simulations = [s for s in simulations if isinstance(s, SimulationResults)]
         if len(self.simulations) == 0:
             self.simulations = [si for s in simulations for si in s if isinstance(s, List)]
         if adapt_to_mean_max:
-            self._stretch()
+            try:
+                self._stretch()
+            except Exception as e:
+                e.__setattr__('project', p_name)
+                e.__setattr__('tool', t_name)
+                raise e
 
     def _stretch(self):
         global_max_mutants = self.mean_max_cost(EffortMetrics.M)
