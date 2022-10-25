@@ -17,7 +17,7 @@ DEFAULT_EXCLUDED_TESTS = ["''", "nan", ""]
 class Mutant:
 
     def __init__(self, failing_tests: Set[str], exclude=DEFAULT_EXCLUDED_TESTS):
-        self.failing_tests = {t for t in failing_tests if t not in exclude}
+        self.failing_tests = {t.strip() for t in failing_tests if t.strip() not in exclude}
 
     def killed(self) -> bool:
         return self.failing_tests is not None and len(self.failing_tests) > 0
@@ -122,6 +122,10 @@ class BasePractitioner:
         """Has still killable mutants to analyse."""
         pass
 
+    def get_killable_mutants_tests(self) -> Set[str]:
+        """tests failing by killable mutants."""
+        pass
+
     def analyse_mutant(self) -> str:
         """implement this to pick and analyse a mutant."""
         pass
@@ -145,14 +149,25 @@ class BasePractitioner:
             simulation_results.on_all_mutants_killed(mu_count, 0)
             simulation_results.on_analysed_all_mutants(mu_count, 0)
         else:
-            while self.has_mutants():
+            while self.has_killable_mutants():
                 written_test = self.analyse_mutant()
-                if written_test is not None:
+                if written_test is not None and len(written_test) > 0:
                     if not simulation_results.is_bug_found() and written_test in target_tests:
                         simulation_results.on_bug_found(self.analysed_mutants, self.written_tests)
                     if not simulation_results.killed_all_mutants() and not self.has_killable_mutants():
                         simulation_results.on_all_mutants_killed(self.analysed_mutants, self.written_tests)
+                    # else:
+                    #     tests_killable_mutants = self.get_killable_mutants_tests()
+                    #     l_tests_killable_mutants = len(tests_killable_mutants)
+                    #     if l_tests_killable_mutants == 0:
+                    #         raise Exception(
+                    #             'no mutant has broken tests but self.has_killable_mutants() returns {0}'.format(
+                    #                 str(self.has_killable_mutants())))
+
+            assert not self.has_killable_mutants()
             assert simulation_results.killed_all_mutants()
+            if self.has_mutants():
+                self.analysed_mutants = self.analysed_mutants + self.mutants_count()
             simulation_results.on_analysed_all_mutants(self.analysed_mutants, self.written_tests)
         return simulation_results
 
@@ -170,7 +185,13 @@ class Practitioner(BasePractitioner):
         return self.mutants is not None and len(self.mutants) > 0
 
     def has_killable_mutants(self):
-        return self.has_mutants() and any(m.killed for m in self.mutants)
+        return self.has_mutants() and any(m.killed() for m in self.mutants)
+
+    def get_killable_mutants_tests(self) -> Set[str]:
+        res = set()
+        if self.has_mutants():
+            res = {t for m in self.mutants for t in m.failing_tests}
+        return res
 
     def on_test_written(self, mutant, test):
         self.mutants = [m for m in self.mutants if test not in m.failing_tests]
@@ -192,7 +213,7 @@ class Practitioner(BasePractitioner):
 
 class PractitionerXByPool(BasePractitioner):
 
-    def __init__(self, mutant_pools: List[List[Mutant]], ranked: bool = False, max_mutants_per_pool=1):
+    def __init__(self, mutant_pools, ranked: bool = False, max_mutants_per_pool=1):
         super(PractitionerXByPool, self).__init__(ranked)
         self.mutant_pools = copy.deepcopy(mutant_pools)
         self.max_mutants_per_pool = max_mutants_per_pool
@@ -207,7 +228,13 @@ class PractitionerXByPool(BasePractitioner):
             len(p) > 0 for p in self.mutant_pools)
 
     def has_killable_mutants(self) -> bool:
-        return self.has_mutants() and any(m.killed for p in self.mutant_pools for m in p)
+        return self.has_mutants() and any(m.killed() for p in self.mutant_pools for m in p)
+
+    def get_killable_mutants_tests(self) -> Set[str]:
+        res = set()
+        if self.has_mutants():
+            res = {t for p in self.mutant_pools for m in p for t in m.failing_tests}
+        return res
 
     def on_test_written(self, mutant, test):
         self.mutant_pools = [[m for m in p if test not in m.failing_tests] for p in self.mutant_pools]
@@ -237,6 +264,8 @@ class PractitionerXByPool(BasePractitioner):
         test = ''
         if mutant.killed():
             test = self.write_test_to_kill_mutant(mutant)
+            if test is None or len(test) < 1:
+                raise Exception()
         else:
             pool.remove(mutant)
         if self.mutants_generated_from_selected_pool == self.max_mutants_per_pool:
@@ -244,20 +273,116 @@ class PractitionerXByPool(BasePractitioner):
         return test
 
 
+class PractitionerXByPoolPoolByPool(PractitionerXByPool):
+
+    def __init__(self, mutant_pools: List[List[List[Mutant]]], ranked: bool = False, max_mutants_per_pool=1):
+        super(PractitionerXByPoolPoolByPool, self).__init__(mutant_pools, ranked=ranked,
+                                                            max_mutants_per_pool=max_mutants_per_pool)
+        self.super_selected_pool = 0
+
+    def mutants_count(self) -> int:
+        return len([m for sp in self.mutant_pools for p in sp for m in p])
+
+    def super_selected_pool_has_mutants(self) -> bool:
+        return self.mutant_pools is not None and len(self.mutant_pools) > 0 \
+               and self.mutant_pools[self.super_selected_pool] is not None \
+               and len(self.mutant_pools[self.super_selected_pool]) > 0 \
+               and any(len(p) > 0 for p in self.mutant_pools[self.super_selected_pool])
+
+    def has_mutants(self) -> bool:
+        return self.mutant_pools is not None and len(self.mutant_pools) > 0 and any(
+            len(p) > 0 for sp in self.mutant_pools for p in sp)
+
+    def has_killable_mutants(self) -> bool:
+        return self.has_mutants() and any(m.killed() for sp in self.mutant_pools for p in sp for m in p)
+
+    def get_killable_mutants_tests(self) -> Set[str]:
+        res = set()
+        if self.has_mutants():
+            res = {t for sp in self.mutant_pools for p in sp for m in p for t in m.failing_tests}
+        return res
+
+    def on_test_written(self, mutant, test):
+        self.mutant_pools = [[[m for m in p if test not in m.failing_tests] for p in sp] for sp in self.mutant_pools]
+        assert mutant not in [m for sp in self.mutant_pools for p in sp for m in p]
+
+    def pass_to_next_pool_index(self):
+        if not self.super_selected_pool_has_mutants():
+            super_m_pools_len = len(self.mutant_pools)
+            if self.super_selected_pool + 1 < super_m_pools_len:
+                self.super_selected_pool = self.super_selected_pool + 1
+                self.selected_pool = 0
+                self.mutants_generated_from_selected_pool = 0
+            else:
+                assert not self.has_mutants(), 'has_mutants returns True but we finished all pools.'
+        else:
+            m_pools_len = len(self.mutant_pools[self.super_selected_pool])
+            self.selected_pool = self.selected_pool + 1 if self.selected_pool + 1 < m_pools_len else 0
+            self.mutants_generated_from_selected_pool = 0
+
+    def get_next_pool(self):
+        """make sure that there's still mutants else risque of infinite loop."""
+        while self.has_mutants() and not (self.super_selected_pool < len(self.mutant_pools) and self.mutant_pools[
+            self.super_selected_pool] is not None and self.selected_pool < len(
+            self.mutant_pools[self.super_selected_pool])):
+            self.pass_to_next_pool_index()
+        p = self.mutant_pools[self.super_selected_pool][self.selected_pool]
+        while p is None or len(p) == 0:
+            self.pass_to_next_pool_index()
+            p = self.mutant_pools[self.super_selected_pool][self.selected_pool]
+        return p
+
+
 class Simulation:
 
     def __init__(self, failing_tests: Set[str]):
         self.failing_tests = failing_tests
 
+    def process_x_ranked_mutants_by_ranked_pool(self, mutant_pools: List[List[List[Mutant]]], repeat=100,
+                                                max_mutants_per_pool=1):
+        result = []
+        for _ in range(0, repeat):
+            pools = []
+            for p_pool in mutant_pools:
+                p = []
+                for m_pool in p_pool:
+                    random.shuffle(m_pool)
+                    p.extend(m_pool)
+                pools.append(p)
+            result.append(self.process_x_mutants_by_ranked_pool(pools, ranked=True, repeat=1,
+                                                                max_mutants_per_pool=max_mutants_per_pool))
+        return result
+
     def process_x_mutants_by_ranked_pool(self, mutant_pools: List[List[Mutant]], ranked: bool = False, repeat=100,
                                          max_mutants_per_pool=1):
-        """ranked param controls the selection of mutants inside one pool"""
+        """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next one.
+        The pools are traversed in the given order.
+        Once all pools are traversed, we restart from the first one again, picking X mutants by pool, etc.
+        ranked param controls the selection of mutants inside one pool."""
         if ranked:
             assert repeat <= 1, 'No repetition needed, if the pools and their mutants are ranked.'
             return [PractitionerXByPool(mutant_pools, ranked, max_mutants_per_pool=max_mutants_per_pool).simulate(
                 self.failing_tests)]
         else:
             return [PractitionerXByPool(mutant_pools, ranked, max_mutants_per_pool=max_mutants_per_pool).simulate(
+                self.failing_tests) for _ in range(0, repeat)]
+
+    def process_x_mutants_by_ranked_pool_by_ranked_pools(self, mutant_pools: List[List[List[Mutant]]],
+                                                         ranked: bool = False, repeat=100, max_mutants_per_pool=1):
+        """the higher level of pools or super_pools (each pool contains pools of mutants) are
+        ranked and traversed in that order until finished:
+        we finish all mutants of the pools of the super_pool before passing to the next super_pool.
+        inside the super_pool, the pools traversing and mutants selection is similar to the one of
+        process_x_mutants_by_ranked_pool().
+        ranked param controls the selection of mutants inside one pool."""
+        if ranked:
+            assert repeat <= 1, 'No repetition needed, if the pools and their mutants are ranked.'
+            return [PractitionerXByPoolPoolByPool(mutant_pools, ranked=ranked,
+                                                  max_mutants_per_pool=max_mutants_per_pool).simulate(
+                self.failing_tests)]
+        else:
+            return [PractitionerXByPoolPoolByPool(mutant_pools, ranked=ranked,
+                                                  max_mutants_per_pool=max_mutants_per_pool).simulate(
                 self.failing_tests) for _ in range(0, repeat)]
 
     def process_ranked_pools(self, mutant_pools: List[List[Mutant]], repeat=100):
