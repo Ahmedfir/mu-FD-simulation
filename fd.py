@@ -185,7 +185,7 @@ class Practitioner(BasePractitioner):
         return self.mutants is not None and len(self.mutants) > 0
 
     def has_killable_mutants(self):
-        return self.has_mutants() and any(m.killed() for m in self.mutants)
+        return any(m.killed() for m in self.mutants)
 
     def get_killable_mutants_tests(self) -> Set[str]:
         res = set()
@@ -224,11 +224,10 @@ class PractitionerXByPool(BasePractitioner):
         return len([m for p in self.mutant_pools for m in p])
 
     def has_mutants(self) -> bool:
-        return self.mutant_pools is not None and len(self.mutant_pools) > 0 and any(
-            len(p) > 0 for p in self.mutant_pools)
+        return self.mutant_pools is not None and any(len(p) > 0 for p in self.mutant_pools)
 
     def has_killable_mutants(self) -> bool:
-        return self.has_mutants() and any(m.killed() for p in self.mutant_pools for m in p)
+        return any(m.killed() for p in self.mutant_pools for m in p)
 
     def get_killable_mutants_tests(self) -> Set[str]:
         res = set()
@@ -246,11 +245,13 @@ class PractitionerXByPool(BasePractitioner):
         self.mutants_generated_from_selected_pool = 0
 
     def get_next_pool(self):
-        """make sure that there's still mutants else risque of infinite loop."""
-        p = self.mutant_pools[self.selected_pool]
-        while p is None or len(p) == 0:
-            self.pass_to_next_pool_index()
-            p = self.mutant_pools[self.selected_pool]
+        """make sure that there's still mutants else risque of crash."""
+        p = next((x for x in self.mutant_pools[self.selected_pool:] if x is not None and len(x) > 0), None)
+        self.mutant_pools = [x for x in self.mutant_pools if x is not None and len(x) > 0]
+        if p is None:
+            p = self.mutant_pools[0]
+            self.mutants_generated_from_selected_pool = 0
+        self.selected_pool = self.mutant_pools.index(p)
         return p
 
     def analyse_mutant(self) -> str:
@@ -290,11 +291,10 @@ class PractitionerXByPoolPoolByPool(PractitionerXByPool):
                and any(len(p) > 0 for p in self.mutant_pools[self.super_selected_pool])
 
     def has_mutants(self) -> bool:
-        return self.mutant_pools is not None and len(self.mutant_pools) > 0 and any(
-            len(p) > 0 for sp in self.mutant_pools for p in sp)
+        return self.mutant_pools is not None and any(len(p) > 0 for sp in self.mutant_pools for p in sp)
 
     def has_killable_mutants(self) -> bool:
-        return self.has_mutants() and any(m.killed() for sp in self.mutant_pools for p in sp for m in p)
+        return any(m.killed() for sp in self.mutant_pools for p in sp for m in p)
 
     def get_killable_mutants_tests(self) -> Set[str]:
         res = set()
@@ -312,24 +312,29 @@ class PractitionerXByPoolPoolByPool(PractitionerXByPool):
             if self.super_selected_pool + 1 < super_m_pools_len:
                 self.super_selected_pool = self.super_selected_pool + 1
                 self.selected_pool = 0
-                self.mutants_generated_from_selected_pool = 0
             else:
                 assert not self.has_mutants(), 'has_mutants returns True but we finished all pools.'
         else:
             m_pools_len = len(self.mutant_pools[self.super_selected_pool])
             self.selected_pool = self.selected_pool + 1 if self.selected_pool + 1 < m_pools_len else 0
-            self.mutants_generated_from_selected_pool = 0
+        self.mutants_generated_from_selected_pool = 0
 
     def get_next_pool(self):
         """make sure that there's still mutants else risque of infinite loop."""
-        while self.has_mutants() and not (self.super_selected_pool < len(self.mutant_pools) and self.mutant_pools[
-            self.super_selected_pool] is not None and self.selected_pool < len(
-            self.mutant_pools[self.super_selected_pool])):
+        while not (self.super_selected_pool < len(self.mutant_pools)
+                   and self.mutant_pools[self.super_selected_pool] is not None
+                   and self.selected_pool < len(self.mutant_pools[self.super_selected_pool])
+                   and self.mutant_pools[self.super_selected_pool][self.selected_pool] is not None
+                   and len(self.mutant_pools[self.super_selected_pool][self.selected_pool]) > 0):
             self.pass_to_next_pool_index()
-        p = self.mutant_pools[self.super_selected_pool][self.selected_pool]
-        while p is None or len(p) == 0:
-            self.pass_to_next_pool_index()
-            p = self.mutant_pools[self.super_selected_pool][self.selected_pool]
+        sp = self.mutant_pools[self.super_selected_pool]
+        p = sp[self.selected_pool]
+        sp = [x for x in self.mutant_pools[self.super_selected_pool] if x is not None and len(x) > 0]
+        self.mutant_pools = [[x for x in super_pool if x is not None and len(x) > 0]
+                             for super_pool in self.mutant_pools
+                             if super_pool is not None and len(super_pool) > 0]
+        self.super_selected_pool = self.mutant_pools.index(sp)
+        self.selected_pool = sp.index(p)
         return p
 
 
