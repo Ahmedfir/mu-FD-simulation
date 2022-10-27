@@ -65,12 +65,18 @@ class SimulationResults:
     def adapt_to_new_analyse_all_mutants_max(self, new_max_mutants: float, new_max_tests: float):
         old_max_mutants = self.analyse_all_mutants.mutants_analysed
         old_max_tests = self.analyse_all_mutants.tests_written
-        if old_max_mutants <= 0:
-            raise Exception('wrong cost to analyse all mutants: {0}'.format(str(old_max_mutants)))
         if old_max_mutants < old_max_tests:
             raise Exception(
-                'wrong cost to analyse all mutants less than tests written: {0} < {1}'.format(str(old_max_mutants),
+                'Wrong cost to analyse all mutants less than tests written: {0} < {1}'.format(str(old_max_mutants),
                                                                                               str(old_max_tests)))
+        if old_max_mutants <= 0:
+            msg = 'Wrong cost to analyse all mutants: {0}'.format(str(old_max_mutants))
+            if self.bug_finding_cost.achieved:
+                msg = 'No mutants analysed but bug found !? ' + msg
+                raise Exception(msg)
+            else:
+                raise Exception(msg)
+
         self.bug_finding_cost.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
         self.kill_all_mutants_cost.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
         self.analyse_all_mutants.adapt_to_new_max(old_max_mutants, new_max_mutants, old_max_tests, new_max_tests)
