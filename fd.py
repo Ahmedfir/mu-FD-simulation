@@ -417,7 +417,7 @@ class EffortMetrics(Enum):
 
 class SimulationsArray:
     def __init__(self, p_name, t_name, simulations, adapt_to_mean_max=True):
-        self.simulations = [s for s in simulations if isinstance(s, SimulationResults)]
+        self.simulations: List[SimulationResults] = [s for s in simulations if isinstance(s, SimulationResults)]
         if len(self.simulations) == 0:
             self.simulations = [si for s in simulations for si in s if isinstance(s, List)]
         if adapt_to_mean_max:
@@ -466,12 +466,13 @@ class SimulationsArray:
 class BugNormalisationResults:
 
     def __init__(self, bug_name: str, metric: EffortMetrics, max_cost_min_tool=True, steps=100,
-                 all_tools_broke_tests=False):
+                 all_tools_broke_tests=False, all_tools_generated_mutants=True):
         self.bug_name = bug_name
         self.metric = metric
         self.max_cost_min_tool = max_cost_min_tool
         self.steps = steps
         self.all_tools_broke_tests = all_tools_broke_tests
+        self.all_tools_generated_mutants = all_tools_generated_mutants
         # tool: [effort:fd]
         self.result: Dict[str, Dict[float, float]] = dict()
         self.max_cost = -1
@@ -492,39 +493,41 @@ class BugNormalisationResults:
             if isfile(pickle_file):
                 return load_zipped_pickle(pickle_file)
 
+        # if nothing is cached
         all_max_costs = [sa.max_cost(self.metric) for sa in tools_results.values()]
-        if self.max_cost_min_tool:
-            if self.all_tools_broke_tests:
-                self.max_cost = min(all_max_costs)
-                assert self.max_cost > 0, '{0} : one of the tools has no mutants {1}'.format(self.bug_name,
-                                                                                             tools_results.keys())
+        # the minimum effort 1 of the tools spent to kill all of its mutants.
+        min_max_cost = min(all_max_costs)
+        if min_max_cost < 1:
+            if self.all_tools_broke_tests or (self.all_tools_generated_mutants and self.metric == EffortMetrics.M):
+                logging.warning('{0} : one of the tools has no mutants {1}'.format(self.bug_name,
+                                                                                   tools_results.keys()))
+                return None
             else:
                 all_max_costs = [c for c in all_max_costs if c > 0]
                 if len(all_max_costs) == 0:
                     logging.warning('Skipping {0}: no tool spent any effort on this target.'.format(self.bug_name))
                     return None
-                self.max_cost = min(all_max_costs)
+                min_max_cost = min(all_max_costs)
 
-            for effort_step in range(0, 101, int(100 / self.steps)):
-                real_effort_step = self.max_cost * float(effort_step) / 100.0
-                for tool in tools_results:
+        # stop when one of the tools reached its max cost. Or for every tool stop at its max.
+        self.max_cost = min_max_cost if self.max_cost_min_tool else max(all_max_costs)
+
+        for effort_step in range(0, 101, int(100 / self.steps)):
+            real_effort_step = self.max_cost * float(effort_step) / 100.0
+            for tool in tools_results:
+
+                if self.max_cost_min_tool \
+                        or tools_results[tool].max_cost(self.metric) >= real_effort_step \
+                        or tool not in self.result or len(self.result[tool]) < 2:
+                    # if the max cost of a tool is lower than the smallest effort 1st step,
+                    # we include it and do not stop at 0.0:
+                    # len(self.result[tool]) < 2
+                    # checks that it contains nothing or only the 0% effort.
                     if tool in self.result:
                         self.result[tool][effort_step] = tools_results[tool].mean_fd_at(real_effort_step, self.metric)
                     else:
                         self.result[tool] = {
                             effort_step: tools_results[tool].mean_fd_at(real_effort_step, self.metric)}
-        else:
-            self.max_cost = max(all_max_costs)
-            for effort_step in range(0, 101, int(100 / self.steps)):
-                real_effort_step = self.max_cost * float(effort_step) / 100.0
-                for tool in tools_results:
-                    if tools_results[tool].max_cost(self.metric) >= real_effort_step:
-                        if tool in self.result:
-                            self.result[tool][effort_step] = tools_results[tool].mean_fd_at(real_effort_step,
-                                                                                            self.metric)
-                        else:
-                            self.result[tool] = {
-                                effort_step: tools_results[tool].mean_fd_at(real_effort_step, self.metric)}
 
         if pickle_file is not None:
             save_zipped_pickle(self, pickle_file)
