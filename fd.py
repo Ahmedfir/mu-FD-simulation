@@ -364,6 +364,61 @@ class Simulation:
                                                                 max_mutants_per_pool=max_mutants_per_pool))
         return result
 
+    def process_x_mutants_by_random_pool(self, mutant_pools: List[List[Mutant]], repeat=100,
+                                         max_mutants_per_pool=1):
+        """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next random one.
+        The pools are traversed in a random order (different one for every repetition).
+        Once all pools are traversed, we restart from the first one again, picking X mutants by pool, etc.
+        """
+        result = []
+        for _ in range(0, repeat):
+            random.shuffle(mutant_pools)
+            result.append(self.process_x_mutants_by_ranked_pool(mutant_pools, ranked=False, repeat=1,
+                                                                max_mutants_per_pool=max_mutants_per_pool))
+        return result
+
+    def process_x_mutants_by_ranked_pool_by_random_pools(self, mutant_pools: List[List[List[Mutant]]], repeat=100,
+                                                         max_mutants_per_pool=1):
+        """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next random one.
+        The pools are traversed in a random order (different one for every repetition).
+        1st degree order of pools is conserved.
+        Once all pools are traversed, we restart from the first one again, picking X mutants by pool, etc.
+        """
+        result = []
+        for _ in range(0, repeat):
+            pools = []
+            for p_pool in mutant_pools:
+                # we shuffle the order of the sub-pools inside of the large pools.
+                random.shuffle(p_pool)
+                pools.append(p_pool)
+            result.append(self.process_x_mutants_by_ranked_pool_by_ranked_pools(pools, ranked=False, repeat=1,
+                                                                                max_mutants_per_pool=max_mutants_per_pool))
+        return result
+
+    def process_x_mutants_by_ranked_pool_by_ranked_pool_by_random_pools(self, mutant_pools: List[List[List[List[Mutant]]]], repeat=100,
+                                                         max_mutants_per_pool=1):
+        """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next random one.
+        The pools are traversed in a random order (different one for every repetition).
+        1st degree order of pools is conserved.
+        Once all pools are traversed, we restart from the first one again, picking X mutants by pool, etc.
+        """
+        result = []
+        for _ in range(0, repeat):
+            ranked_pools = []
+            # p_pool : simple or not
+            for p_pool in mutant_pools:
+                sub_ranked_pools = []
+                # sub_pool: nat groups.
+                for sub_pool in p_pool:
+                    # shuffle which line to consider first
+                    random.shuffle(sub_pool)
+                    for line_pool in sub_pool:
+                        sub_ranked_pools.append(line_pool)
+                ranked_pools.append(sub_ranked_pools)
+            result.append(self.process_x_mutants_by_ranked_pool_by_ranked_pools(ranked_pools, ranked=False, repeat=1,
+                                                                                max_mutants_per_pool=max_mutants_per_pool))
+        return result
+
     def process_x_mutants_by_ranked_pool(self, mutant_pools: List[List[Mutant]], ranked: bool = False, repeat=100,
                                          max_mutants_per_pool=1):
         """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next one.
