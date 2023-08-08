@@ -377,6 +377,29 @@ class Simulation:
                                                                 max_mutants_per_pool=max_mutants_per_pool))
         return result
 
+    def process_x_mutants_by_random_pool_by_ranked_pools(self, mutant_pools: List[List[List[Mutant]]], repeat=100,
+                                                         max_mutants_per_pool=1):
+        """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next random one.
+        The pools are traversed in a random order (different one for every repetition).
+        1st degree order of pools is conserved.
+        Once all pools are traversed, we restart from the first one again, picking X mutants by pool, etc.
+        """
+        result = []
+        for _ in range(0, repeat):
+            pools = []
+            random.shuffle(mutant_pools)  # shuffle lines
+            for p_pool in mutant_pools:
+                sh_p_pool = []
+                # p_pool of mutants of the same line
+                for m_pool in p_pool:
+                    # m_pool of mutants with the same score
+                    random.shuffle(m_pool)  # shuffle mutants with the same score
+                    sh_p_pool.extend(m_pool)
+                pools.append(sh_p_pool)
+            result.append(self.process_x_mutants_by_ranked_pool(pools, ranked=True, repeat=1,
+                                                                max_mutants_per_pool=max_mutants_per_pool))
+        return result
+
     def process_x_mutants_by_ranked_pool_by_random_pools(self, mutant_pools: List[List[List[Mutant]]], repeat=100,
                                                          max_mutants_per_pool=1):
         """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next random one.
@@ -395,8 +418,48 @@ class Simulation:
                                                                                 max_mutants_per_pool=max_mutants_per_pool))
         return result
 
-    def process_x_mutants_by_ranked_pool_by_ranked_pool_by_random_pools(self, mutant_pools: List[List[List[List[Mutant]]]], repeat=100,
-                                                         max_mutants_per_pool=1):
+    def process_x_mutants_by_ranked_pool_by_random_pool_by_ranked_pools(self,
+                                                                        mutant_pools: List[List[List[List[Mutant]]]],
+                                                                        repeat=100,
+                                                                        max_mutants_per_pool=1):
+
+        """
+        1st level (simple or not): each pool is emptied before passing to the next one.
+        2nd level (lines): ordered randomly, then x mutants is selected from each pool before passing to the next one,
+        and we iterate.
+        3rd level (scores): order conserved
+        4th level (mutants): ordered randomly.
+
+        """
+        result = []
+        for _ in range(0, repeat):
+            ranked_pools = []
+            for p_pool in mutant_pools:
+                # p_pool of lines_scores_mutants form the same pattern: simple or not
+                sub_ranked_pools = []
+                # shuffle the lines order
+                random.shuffle(p_pool)
+                for sub_pool in p_pool:
+                    # sub_pool of 1 line scores_mutants (of the same line).
+                    line_pools = []
+                    # we do not shuffle the scores order (sub_pool).
+                    for score_pool in sub_pool:
+                        # we shuffle the mutants of the same score
+                        random.shuffle(score_pool)
+                        # we add the mutants to the line
+                        line_pools.extend(score_pool)
+                    # we add the line to the pattern pool
+                    sub_ranked_pools.append(line_pools)
+                # we add the the pattern pool to the ranked_pools.
+                ranked_pools.append(sub_ranked_pools)
+            result.append(self.process_x_mutants_by_ranked_pool_by_ranked_pools(ranked_pools, ranked=True, repeat=1,
+                                                                                max_mutants_per_pool=max_mutants_per_pool))
+        return result
+
+    def process_x_mutants_by_ranked_pool_by_ranked_pool_by_random_pools(self,
+                                                                        mutant_pools: List[List[List[List[Mutant]]]],
+                                                                        repeat=100,
+                                                                        max_mutants_per_pool=1):
         """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next random one.
         The pools are traversed in a random order (different one for every repetition).
         1st degree order of pools is conserved.
@@ -567,6 +630,8 @@ class BugNormalisationResults:
         # stop when one of the tools reached its max cost. Or for every tool stop at its max.
         self.max_cost = min_max_cost if self.max_cost_min_tool else max(all_max_costs)
 
+        # fixme implement the 100% separately.
+
         for effort_step in range(0, 101, int(100 / self.steps)):
             real_effort_step = self.max_cost * float(effort_step) / 100.0
             for tool in tools_results:
@@ -583,6 +648,18 @@ class BugNormalisationResults:
                     else:
                         self.result[tool] = {
                             effort_step: tools_results[tool].mean_fd_at(real_effort_step, self.metric)}
+
+        if not self.max_cost_min_tool:
+            for t in self.result:
+                t_max_cost = tools_results[t].max_cost(self.metric)
+                t_max_fd = tools_results[t].mean_fd_at(t_max_cost, self.metric)
+                last_normalised_effort = list(self.result[t].keys())[-1]
+
+                if t_max_fd > self.result[t][last_normalised_effort]:
+                    new_last_normalised_effort = float(min(
+                        [st for st in range(int(last_normalised_effort), 101, int(100 / self.steps)) if
+                         float(st) > last_normalised_effort]))
+                    self.result[t][new_last_normalised_effort] = t_max_fd
 
         if pickle_file is not None:
             save_zipped_pickle(self, pickle_file)
