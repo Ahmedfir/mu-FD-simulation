@@ -4,23 +4,14 @@ import random
 from enum import Enum
 from os import makedirs
 from os.path import join, isdir, isfile
-from typing import Set, List, Dict
+from typing import Dict, Set
+from typing import List
 
+from mutant import Mutant
 from pickle_utils import load_zipped_pickle, save_zipped_pickle
-
-DEFAULT_EXCLUDED_TESTS = ["''", "nan", ""]
 
 
 # todo refactor: most of code is duplicated considering mutants or tests as cost
-
-
-class Mutant:
-
-    def __init__(self, failing_tests: Set[str], exclude=DEFAULT_EXCLUDED_TESTS):
-        self.failing_tests = {t.strip() for t in failing_tests if t.strip() not in exclude}
-
-    def killed(self) -> bool:
-        return self.failing_tests is not None and len(self.failing_tests) > 0
 
 
 class TargetCost:
@@ -61,6 +52,7 @@ class SimulationResults:
         self.bug_finding_cost: TargetCost = TargetCost()
         self.kill_all_mutants_cost: TargetCost = TargetCost()
         self.analyse_all_mutants: TargetCost = TargetCost()
+        self.ts_evolution: Dict[int, str] = dict()
 
     def adapt_to_new_analyse_all_mutants_max(self, new_max_mutants: float, new_max_tests: float):
         old_max_mutants = self.analyse_all_mutants.mutants_analysed
@@ -97,6 +89,9 @@ class SimulationResults:
 
     def on_analysed_all_mutants(self, mutants_analysed, tests_written):
         self.analyse_all_mutants.set(mutants_analysed, tests_written)
+        if int(mutants_analysed) not in self.ts_evolution:
+            self.ts_evolution[mutants_analysed] = ''
+        assert len({t for t in self.ts_evolution.values() if len(t) > 0}) == tests_written
 
     def is_bug_found(self):
         return self.bug_finding_cost.achieved
@@ -154,6 +149,7 @@ class BasePractitioner:
             mu_count = self.mutants_count()
             simulation_results.on_all_mutants_killed(mu_count, 0)
             simulation_results.on_analysed_all_mutants(mu_count, 0)
+            simulation_results.ts_evolution[mu_count] = []
         else:
             while self.has_killable_mutants():
                 written_test = self.analyse_mutant()
@@ -162,6 +158,7 @@ class BasePractitioner:
                         simulation_results.on_bug_found(self.analysed_mutants, self.written_tests)
                     if not simulation_results.killed_all_mutants() and not self.has_killable_mutants():
                         simulation_results.on_all_mutants_killed(self.analysed_mutants, self.written_tests)
+                    simulation_results.ts_evolution[self.analysed_mutants] = written_test
                     # else:
                     #     tests_killable_mutants = self.get_killable_mutants_tests()
                     #     l_tests_killable_mutants = len(tests_killable_mutants)
@@ -237,7 +234,7 @@ class PractitionerXByPool(BasePractitioner):
 
     def get_killable_mutants_tests(self) -> Set[str]:
         res = set()
-        if self.has_mutants():
+        if self.has_killable_mutants():
             res = {t for p in self.mutant_pools for m in p for t in m.failing_tests}
         return res
 
