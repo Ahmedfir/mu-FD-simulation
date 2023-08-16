@@ -4,6 +4,7 @@ import random
 from enum import Enum
 from os import makedirs
 from os.path import join, isdir, isfile
+from pathlib import Path
 from typing import Dict, Set
 from typing import List
 
@@ -12,6 +13,20 @@ from pickle_utils import load_zipped_pickle, save_zipped_pickle
 
 
 # todo refactor: most of code is duplicated considering mutants or tests as cost
+
+
+def load_cached_progress(cache_dir, tmp_file) -> List:
+    result = []
+    if cache_dir is not None and tmp_file is not None:
+        pickle_file = join(cache_dir, tmp_file)
+        if isfile(pickle_file):
+            result = load_zipped_pickle(join(cache_dir, tmp_file))
+        elif not isdir(Path(pickle_file).parent):
+            try:
+                makedirs(Path(pickle_file).parent)
+            except FileExistsError:
+                print("two threads created the directory concurrently.")
+    return result
 
 
 class TargetCost:
@@ -188,7 +203,7 @@ class Practitioner(BasePractitioner):
         return self.mutants is not None and len(self.mutants) > 0
 
     def has_killable_mutants(self):
-        return any(m.killed() for m in self.mutants)
+        return any(True for m in self.mutants if m.killed)
 
     def get_killable_mutants_tests(self) -> Set[str]:
         res = set()
@@ -207,7 +222,7 @@ class Practitioner(BasePractitioner):
         else:
             mutant = self.mutants[random.choice(range(0, len(self.mutants)))]
         test = ''
-        if mutant.killed():
+        if mutant.killed:
             test = self.write_test_to_kill_mutant(mutant)
         else:
             self.mutants.remove(mutant)
@@ -227,10 +242,10 @@ class PractitionerXByPool(BasePractitioner):
         return len([m for p in self.mutant_pools for m in p])
 
     def has_mutants(self) -> bool:
-        return self.mutant_pools is not None and any(len(p) > 0 for p in self.mutant_pools)
+        return self.mutant_pools is not None and any(True for p in self.mutant_pools if len(p) > 0)
 
     def has_killable_mutants(self) -> bool:
-        return any(m.killed() for p in self.mutant_pools for m in p)
+        return any(True for p in self.mutant_pools for m in p if m.killed)
 
     def get_killable_mutants_tests(self) -> Set[str]:
         res = set()
@@ -266,7 +281,7 @@ class PractitionerXByPool(BasePractitioner):
         else:
             mutant = pool[random.choice(range(0, len(pool)))]
         test = ''
-        if mutant.killed():
+        if mutant.killed:
             test = self.write_test_to_kill_mutant(mutant)
             if test is None or len(test) < 1:
                 raise Exception()
@@ -283,31 +298,29 @@ class PractitionerXByPoolPoolByPool(PractitionerXByPool):
         super(PractitionerXByPoolPoolByPool, self).__init__(mutant_pools, ranked=ranked,
                                                             max_mutants_per_pool=max_mutants_per_pool)
         self.super_selected_pool = 0
+        self.killing_tests = {t for p1 in self.mutant_pools for p in p1 for m in p for t in m.failing_tests}
 
     def mutants_count(self) -> int:
         return len([m for sp in self.mutant_pools for p in sp for m in p])
 
     def super_selected_pool_has_mutants(self) -> bool:
-        return self.mutant_pools is not None and len(self.mutant_pools) > 0 \
-               and self.mutant_pools[self.super_selected_pool] is not None \
-               and len(self.mutant_pools[self.super_selected_pool]) > 0 \
-               and any(len(p) > 0 for p in self.mutant_pools[self.super_selected_pool])
+        return self.mutant_pools \
+               and self.mutant_pools[self.super_selected_pool] \
+               and any(True for p in self.mutant_pools[self.super_selected_pool] if p)
 
     def has_mutants(self) -> bool:
-        return self.mutant_pools is not None and any(len(p) > 0 for sp in self.mutant_pools for p in sp)
+        return self.mutant_pools is not None and any(True for sp in self.mutant_pools for p in sp if p)
 
     def has_killable_mutants(self) -> bool:
-        return any(m.killed() for sp in self.mutant_pools for p in sp for m in p)
+        return len(self.killing_tests) > 0
 
     def get_killable_mutants_tests(self) -> Set[str]:
-        res = set()
-        if self.has_mutants():
-            res = {t for sp in self.mutant_pools for p in sp for m in p for t in m.failing_tests}
-        return res
+        return self.killing_tests
 
     def on_test_written(self, mutant, test):
         self.mutant_pools = [[[m for m in p if test not in m.failing_tests] for p in sp] for sp in self.mutant_pools]
-        assert mutant not in [m for sp in self.mutant_pools for p in sp for m in p]
+        self.killing_tests.remove(test)
+        # assert mutant not in [m for sp in self.mutant_pools for p in sp for m in p]
 
     def pass_to_next_pool_index(self):
         if not self.super_selected_pool_has_mutants():
@@ -397,15 +410,18 @@ class Simulation:
                                                                 max_mutants_per_pool=max_mutants_per_pool))
         return result
 
-    def process_x_mutants_by_ranked_pool_by_random_pools(self, mutant_pools: List[List[List[Mutant]]], repeat=100,
+    def process_x_mutants_by_ranked_pool_by_random_pools(self, mutant_pools: List[List[List[Mutant]]],
+                                                         tmp_file,
+                                                         cache_dir='process_x_mutants_by_ranked_pool_by_random_pools',
+                                                         repeat=100,
                                                          max_mutants_per_pool=1):
         """X (max_mutants_per_pool) mutants are selected from each pool before passing to the next random one.
         The pools are traversed in a random order (different one for every repetition).
         1st degree order of pools is conserved.
         Once all pools are traversed, we restart from the first one again, picking X mutants by pool, etc.
         """
-        result = []
-        for _ in range(0, repeat):
+        result = load_cached_progress(cache_dir, tmp_file)
+        for _ in range(len(result), repeat):
             pools = []
             for p_pool in mutant_pools:
                 # we shuffle the order of the sub-pools inside of the large pools.
@@ -413,6 +429,8 @@ class Simulation:
                 pools.append(p_pool)
             result.append(self.process_x_mutants_by_ranked_pool_by_ranked_pools(pools, ranked=False, repeat=1,
                                                                                 max_mutants_per_pool=max_mutants_per_pool))
+            save_zipped_pickle(result, join(cache_dir, tmp_file))
+            print('{0} simulation repetitions cached in {1}'.format(str(len(result)), tmp_file))
         return result
 
     def process_x_mutants_by_ranked_pool_by_random_pool_by_ranked_pools(self,
